@@ -27,6 +27,7 @@ ClaudeFlow/
 ├── manage.py            # CLI management tool
 ├── project_manager.py   # Registry proyek lokal (projects.json)
 ├── requirements.txt     # Dependensi Python
+├── .claude/skills/      # Claude Code Skills (claudeflow-operator)
 └── .gitignore           # Filter session, credentials, dan output media
 ```
 
