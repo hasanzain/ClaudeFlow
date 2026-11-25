@@ -1,0 +1,31 @@
+# Virtual Environment & Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Google Flow browser sessions, cookies & secrets
+accounts.json
+projects.json
+profiles/
+
+# Output generated media & test artifacts
+outputs/
+jobs/
+*.png
+*.webp
+*.mp4
+*.html
+
+# Temporary & debug scripts
+debug_*.py
+create_reference_job.py
+test_daemon_accounts.json
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
