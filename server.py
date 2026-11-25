@@ -21,6 +21,8 @@ def list_accounts() -> Dict[str, Any]:
             "id": a.id,
             "email": a.email,
             "status": a.status,
+            "credits": a.credits,
+            "credits_updated_at": a.credits_updated_at,
             "cooldown_until": a.cooldown_until,
             "has_profile": a.profile_dir.exists(),
             "proxy": a.proxy

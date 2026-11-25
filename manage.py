@@ -17,11 +17,12 @@ def cmd_list_accounts(args):
     if not mgr.accounts:
         print("Belum ada akun terdaftar. Gunakan: python manage.py add-account <id> <email>")
         return
-    print(f"{'ID':<15} {'EMAIL':<30} {'STATUS':<12} {'HAS_COOKIES'}")
-    print("-" * 65)
+    print(f"{'ID':<15} {'EMAIL':<30} {'STATUS':<12} {'KREDIT':<10} {'HAS_COOKIES'}")
+    print("-" * 75)
     for a in mgr.accounts:
-        has_cookies = "YES" if a.cookies else "NO (Mock mode)"
-        print(f"{a.id:<15} {a.email:<30} {a.status:<12} {has_cookies}")
+        has_cookies = "YES" if a.cookies else "NO (Profile mode)"
+        cred_str = str(a.credits) if a.credits is not None else "Unknown"
+        print(f"{a.id:<15} {a.email:<30} {a.status:<12} {cred_str:<10} {has_cookies}")
 
 def cmd_set_cookies(args):
     """Import cookies dari format JSON atau file."""

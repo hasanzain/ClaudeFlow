@@ -1,5 +1,6 @@
 import time
 import base64
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from config import FLOW_URL, PROFILES_DIR
@@ -11,6 +12,13 @@ class AuthError(Exception):
 class RateLimitError(Exception):
     """Batas kuota habis / HTTP 429."""
     pass
+
+class InsufficientCreditsError(Exception):
+    """Saldo kredit akun tidak mencukupi untuk job ini."""
+    def __init__(self, message: str, available_credits: int | None = None, required_credits: int | None = None):
+        super().__init__(message)
+        self.available_credits = available_credits
+        self.required_credits = required_credits
 
 class RpcError(Exception):
     """Error eksekusi dari Google server."""
@@ -152,68 +160,97 @@ class FlowRpcClient:
                     except Exception:
                         pass
 
-                # Jika media_type == 'video', buat adegan baru
-                if media_type == "video":
-                    top_add = page.locator('button[aria-label="Menu tambahkan media"]').first
-                    if top_add.count() > 0:
-                        top_add.click()
+                # 1. Pastikan selalu menggunakan MODE KLASIK (matikan Agen Flow jika aktif)
+                try:
+                    agent_toggle = page.locator('button[aria-label="Agen Flow"]').first
+                    if agent_toggle.count() > 0 and 'checked' in (agent_toggle.get_attribute('class') or ''):
+                        agent_toggle.click()
+                        page.wait_for_timeout(700)
+                except Exception as e:
+                    print(f"[Client] Warning disabling agent mode: {e}")
+
+                # 2. Cek saldo kredit akun yang tersedia
+                available_credits = None
+                try:
+                    user_btn = page.locator('.header-user-button, [aria-label*="Detail akun"]').first
+                    if user_btn.count() > 0:
+                        user_btn.click()
+                        page.wait_for_timeout(800)
+                        menu_text = page.locator('.cdk-overlay-container').inner_text()
+                        m_cred = re.search(r'(\d+)\s+kredit', menu_text)
+                        if m_cred:
+                            available_credits = int(m_cred.group(1))
+                            from accounts import AccountManager
+                            AccountManager().update_credits(self.account_id, available_credits)
+                            print(f"[Client] Akun {self.account_id} memiliki {available_credits} kredit tersedia.")
+
+                        # Tutup menu profil akun
+                        close_btn = page.locator('.cdk-overlay-container button:has-text("Tutup"), .cdk-overlay-backdrop').first
+                        if close_btn.count() > 0:
+                            close_btn.click()
+                        else:
+                            page.keyboard.press("Escape")
                         page.wait_for_timeout(500)
-                        page.locator('button:has-text("Adegan baru")').first.click()
-                        page.wait_for_timeout(1500)
-                        page.wait_for_selector('button[aria-label="Mulai pembuatan"]', timeout=25000)
+                except Exception as e:
+                    print(f"[Client] Warning checking available credits: {e}")
 
-                # Atur parameter rasio aspek, model, atau jumlah output via Setelan Agen
-                if aspect_ratio or model or count:
-                    try:
-                        agent_settings_btn = page.locator('button[aria-label="Setelan agen"]').first
-                        if agent_settings_btn.count() > 0:
-                            agent_settings_btn.click()
-                            page.wait_for_timeout(700)
+                # 3. Atur parameter generasi di Mode Klasik via 'Pemicu setelan'
+                required_credits = 0
+                try:
+                    pemicu = page.locator('button[aria-label="Pemicu setelan"]').first
+                    if pemicu.count() > 0:
+                        pemicu.click()
+                        page.wait_for_timeout(700)
 
-                            # Masuk ke Default gambar jika membuat gambar atau Default video jika video
-                            target_default_text = "Default video" if media_type == "video" else "Default gambar"
-                            target_menu = page.locator(f'button:has-text("{target_default_text}")').first
-                            if target_menu.count() > 0:
-                                target_menu.click()
-                                page.wait_for_timeout(700)
+                        # A. Pilih Gambar atau Video
+                        target_type = "Video" if media_type == "video" else "Gambar"
+                        type_btn = page.locator(f'.cdk-overlay-container button:has-text("{target_type}")').first
+                        if type_btn.count() > 0:
+                            type_btn.click()
+                            page.wait_for_timeout(300)
 
-                                # 1. Pilih Model jika diminta
-                                if model:
-                                    model_radio = page.locator(f'[role="radio"]:has-text("{model}"), button:has-text("{model}")').first
-                                    if model_radio.count() > 0:
-                                        model_radio.click()
-                                        page.wait_for_timeout(300)
+                        # B. Pilih Rasio Aspek
+                        if aspect_ratio:
+                            ar_btn = page.locator(f'.cdk-overlay-container button:has-text("{aspect_ratio}")').first
+                            if ar_btn.count() > 0:
+                                ar_btn.click()
+                                page.wait_for_timeout(300)
 
-                                # 2. Pilih Rasio aspek jika diminta
-                                if aspect_ratio:
-                                    ar_btn = page.locator(f'button:has-text("{aspect_ratio}")').first
-                                    if ar_btn.count() > 0:
-                                        ar_btn.click()
-                                        page.wait_for_timeout(300)
+                        # C. Pilih Model jika diberikan
+                        if model:
+                            m_btn = page.locator(f'.cdk-overlay-container button:has-text("{model}")').first
+                            if m_btn.count() > 0:
+                                m_btn.click()
+                                page.wait_for_timeout(300)
 
-                                # 3. Pilih Jumlah output jika diminta (x1, x2, x3, x4)
-                                if count:
-                                    count_label = f"x{count}"
-                                    c_btn = page.locator(f'button:has-text("{count_label}")').first
-                                    if c_btn.count() > 0:
-                                        c_btn.click()
-                                        page.wait_for_timeout(300)
+                        # D. Pilih Jumlah Variasi Output (x1, x2, x3, x4)
+                        if count:
+                            c_btn = page.locator(f'.cdk-overlay-container button:has-text("x{count}")').first
+                            if c_btn.count() > 0:
+                                c_btn.click()
+                                page.wait_for_timeout(300)
 
-                                # Klik tombol Kembali (arrow_back) untuk kembali ke kanvas
-                                back_btn = page.locator('button[aria-label="Kembali"]').first
-                                if back_btn.count() > 0:
-                                    back_btn.click()
-                                    page.wait_for_timeout(400)
-                                    # Back lagi jika masih ada tombol kembali
-                                    back_btn2 = page.locator('button[aria-label="Kembali"]').first
-                                    if back_btn2.count() > 0:
-                                        back_btn2.click()
-                                        page.wait_for_timeout(400)
-                    except Exception as e:
-                        print(f"[Client] Warning setting agent preferences: {e}")
-                    finally:
+                        # E. Hitung estimasi kredit yang diperlukan
+                        ov_text = page.locator('.cdk-overlay-container').inner_text()
+                        m_cost = re.search(r'Pembuatan akan menggunakan\s+(\d+)\s+kredit', ov_text)
+                        if m_cost:
+                            required_credits = int(m_cost.group(1))
+                            print(f"[Client] Biaya estimasi pembuatan: {required_credits} kredit.")
+
                         page.keyboard.press("Escape")
-                        page.wait_for_timeout(300)
+                        page.wait_for_timeout(400)
+                except Exception as e:
+                    print(f"[Client] Warning setting classic parameters: {e}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(300)
+
+                # 4. Validasi pra-eksekusi saldo kredit
+                if available_credits is not None and required_credits > available_credits:
+                    raise InsufficientCreditsError(
+                        f"Kredit tidak cukup: Saldo {available_credits} kredit < Diperlukan {required_credits} kredit.",
+                        available_credits=available_credits,
+                        required_credits=required_credits
+                    )
 
                 # Ambil daftar gambar/video awal
                 existing_media = page.evaluate(r'''() => {

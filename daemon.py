@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from config import JOBS_DIR, OUTPUTS_DIR, POLL_INTERVAL_SECONDS
 from accounts import AccountManager
-from client import FlowRpcClient, AuthError, RateLimitError, RpcError
+from client import FlowRpcClient, AuthError, RateLimitError, RpcError, InsufficientCreditsError
 
 class QueueDaemon:
     def __init__(self, account_mgr: AccountManager | None = None):
@@ -56,61 +56,74 @@ class QueueDaemon:
             target_dir.mkdir(parents=True, exist_ok=True)
             dest_file = target_dir / f"{job_id}.{ext}"
 
-            # Dapatkan akun yang siap
-            account = self.account_mgr.get_ready_account()
-            if not account:
-                # Tidak ada akun yang siap (semua cooldown/habis kuota)
-                # ponytail: single-node wait ceiling 1 worker, upgrade to distributed event bus when multi-machine
-                return processed_count
+            # Coba proses dengan akun yang siap (auto-switch jika saldo kurang / limit)
+            job_completed = False
+            while True:
+                account = self.account_mgr.get_ready_account()
+                if not account:
+                    # Tidak ada akun yang siap / saldo cukup saat ini
+                    break
 
-            print(f"[Queue] Processing job {job_id} using account {account.id}...")
-            client = FlowRpcClient(
-                account_id=account.id,
-                profile_dir=account.profile_dir,
-                cookies=account.cookies,
-                proxy=account.proxy,
-                mock=(account.cookies is None)
-            )
-
-            try:
-                res = client.generate(
-                    prompt=prompt,
-                    media_type=media_type,
-                    aspect_ratio=aspect_ratio,
-                    model=model,
-                    count=count,
-                    reference_asb_ids=reference_asb_ids,
-                    project_name=project_name,
-                    project_id=project_id,
-                    dest_file=dest_file
+                print(f"[Queue] Processing job {job_id} using account {account.id}...")
+                client = FlowRpcClient(
+                    account_id=account.id,
+                    profile_dir=account.profile_dir,
+                    cookies=account.cookies,
+                    proxy=account.proxy,
+                    mock=(account.cookies is None)
                 )
-                self.account_mgr.mark_ready(account.id)
-                saved_outputs = [str(p) for p in res.output_paths] if res.output_paths else [str(dest_file)]
-                done_file.write_text(json.dumps({
-                    "id": job_id,
-                    "status": "COMPLETED",
-                    "account_used": account.id,
-                    "output": str(saved_outputs[0]),
-                    "outputs": saved_outputs,
-                    "media_assets": res.media_assets,
-                    "completed_at": time.time()
-                }, indent=2), encoding="utf-8")
-                print(f"[Queue] Job {job_id} COMPLETED -> {saved_outputs}")
-                processed_count += 1
 
-            except RateLimitError as e:
-                print(f"[Queue] Account {account.id} rate limited: {e}. Cooldown activated.")
-                self.account_mgr.mark_cooldown(account.id)
-                # Job tidak di-mark failed, tetap di antrean untuk akun berikutnya
+                try:
+                    res = client.generate(
+                        prompt=prompt,
+                        media_type=media_type,
+                        aspect_ratio=aspect_ratio,
+                        model=model,
+                        count=count,
+                        reference_asb_ids=reference_asb_ids,
+                        project_name=project_name,
+                        project_id=project_id,
+                        dest_file=dest_file
+                    )
+                    self.account_mgr.mark_ready(account.id)
+                    saved_outputs = [str(p) for p in res.output_paths] if res.output_paths else [str(dest_file)]
+                    done_file.write_text(json.dumps({
+                        "id": job_id,
+                        "status": "COMPLETED",
+                        "account_used": account.id,
+                        "output": str(saved_outputs[0]),
+                        "outputs": saved_outputs,
+                        "media_assets": res.media_assets,
+                        "completed_at": time.time()
+                    }, indent=2), encoding="utf-8")
+                    print(f"[Queue] Job {job_id} COMPLETED -> {saved_outputs}")
+                    processed_count += 1
+                    job_completed = True
+                    break
 
-            except AuthError as e:
-                print(f"[Queue] Account {account.id} auth expired: {e}")
-                self.account_mgr.mark_cooldown(account.id, duration=86400)
+                except InsufficientCreditsError as e:
+                    print(f"[Queue] Akun {account.id} saldo kredit tidak cukup: {e}. Mengalihkan ke akun berikutnya...")
+                    # Set cooldown 12 jam (sampai jadwal reset harian)
+                    self.account_mgr.mark_cooldown(account.id, duration=43200)
+                    # Lanjut mencoba akun berikutnya di pool tanpa menunggu gagal
+                    continue
 
-            except Exception as e:
-                print(f"[Queue] Job {job_id} failed: {e}")
-                self.account_mgr.mark_ready(account.id)
-                failed_file.write_text(json.dumps({"error": str(e)}, indent=2), encoding="utf-8")
+                except RateLimitError as e:
+                    print(f"[Queue] Account {account.id} rate limited: {e}. Cooldown activated.")
+                    self.account_mgr.mark_cooldown(account.id)
+                    # Lanjut mencoba akun berikutnya
+                    continue
+
+                except AuthError as e:
+                    print(f"[Queue] Account {account.id} auth expired: {e}")
+                    self.account_mgr.mark_cooldown(account.id, duration=86400)
+                    continue
+
+                except Exception as e:
+                    print(f"[Queue] Job {job_id} failed: {e}")
+                    self.account_mgr.mark_ready(account.id)
+                    failed_file.write_text(json.dumps({"error": str(e)}, indent=2), encoding="utf-8")
+                    break
 
         return processed_count
 

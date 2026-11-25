@@ -17,6 +17,8 @@ class Account:
     status: str = STATUS_READY
     cooldown_until: float = 0.0
     last_used: float = 0.0
+    credits: int | None = None
+    credits_updated_at: float = 0.0
     proxy: str | None = None
     cookies: dict | None = None  # Dict of cookie_name -> cookie_value
 
@@ -46,7 +48,7 @@ class AccountManager:
         self.save()
         return acc
 
-    def get_ready_account(self) -> Account | None:
+    def get_ready_account(self, required_credits: int | None = None) -> Account | None:
         now = time.time()
         # Reset accounts past cooldown
         for acc in self.accounts:
@@ -54,10 +56,19 @@ class AccountManager:
                 acc.status = STATUS_READY
                 acc.cooldown_until = 0.0
 
-        # ponytail: simple FIFO rotation ceiling 100 accounts, upgrade to priority queue when concurrent workers > 10
+        # Filter akun yang siap
         ready = [acc for acc in self.accounts if acc.status == STATUS_READY]
         if not ready:
             return None
+
+        # Jika required_credits diberikan, prioritaskan akun yang saldonya cukup (atau belum diketahui)
+        if required_credits is not None:
+            sufficient = [acc for acc in ready if acc.credits is None or acc.credits >= required_credits]
+            if sufficient:
+                ready = sufficient
+            else:
+                # Tidak ada akun dengan kredit cukup
+                return None
 
         # Pick least recently used
         ready.sort(key=lambda a: a.last_used)
@@ -66,6 +77,14 @@ class AccountManager:
         chosen.last_used = now
         self.save()
         return chosen
+
+    def update_credits(self, acc_id: str, credits: int):
+        for acc in self.accounts:
+            if acc.id == acc_id:
+                acc.credits = credits
+                acc.credits_updated_at = time.time()
+                self.save()
+                return
 
     def mark_ready(self, acc_id: str):
         for acc in self.accounts:
